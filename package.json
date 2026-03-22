@@ -1,0 +1,56 @@
+{
+	"name": "@rjocoleman/agent-mail",
+	"version": "0.1.0",
+	"description": "Pure TypeScript library for read-only IMAP access. Markdown output optimised for LLM context windows.",
+	"license": "MIT",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"bun": "./src/index.ts",
+			"import": "./dist/index.js",
+			"types": "./dist/index.d.ts"
+		}
+	},
+	"files": [
+		"src",
+		"dist",
+		"!src/**/*.test.ts",
+		"!src/test-fixtures.ts"
+	],
+	"bin": {
+		"agent-mail": "src/cli.ts"
+	},
+	"engines": {
+		"bun": ">=1.0"
+	},
+	"scripts": {
+		"build": "rm -rf dist && bunx tsc -p tsconfig.build.json",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"format": "biome format --write .",
+		"test": "bun test",
+		"typecheck": "bunx tsc --noEmit",
+		"check": "biome check . && bunx tsc --noEmit && bun test",
+		"preversion": "bun run check",
+		"version": "bun scripts/sync-version.ts && git add jsr.json",
+		"prepublishOnly": "bun run check && bun run build",
+		"cli": "bun run src/cli.ts"
+	},
+	"dependencies": {
+		"imapflow": "^1.2.16",
+		"mailparser": "^3.9.4",
+		"turndown": "^7.2.2",
+		"zod": "^4.3.6"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.8",
+		"@types/bun": "latest",
+		"@types/mailparser": "^3.4.6",
+		"@types/turndown": "^5.0.6"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	}
+}
