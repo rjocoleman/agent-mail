@@ -107,6 +107,8 @@ await mail.thread({ uid: 18823 });
 
 Full-text and structured search. Use `folder: "*"` to search all folders.
 
+The `query` field performs a plain substring match against message bodies (IMAP BODY). Boolean operators, quoted phrases, and wildcards are not supported by default. Use the structured fields (`from`, `to`, `subject`, date ranges) for precise filtering. Set `sanitiseQuery: false` in config to pass raw query strings through.
+
 ```typescript
 await mail.search({ query: "quarterly report", from: "alice@co.nz", since: "2026-01-01" });
 ```
@@ -134,13 +136,18 @@ interface MailConfig {
     command?: number;          // default: 30_000ms
     search?: number;           // default: 60_000ms
   };
-  ip_family?: 0 | 4 | 6;       // default: 0 (both). 4 = IPv4 only
+  ip_family?: 0 | 4 | 6;       // default: 4 (IPv4 only). 0 = both, 6 = IPv6 only
   tls?: {
     servername?: string;       // SNI hostname override
     rejectUnauthorized?: boolean;
   };
   summarise?: Summariser;      // default summariser callback
   folderAliases?: Record<string, string>;
+  sanitiseQuery?: boolean;     // default: true. Strip boolean operators from search queries
+  onConnectionError?: (error: Error) => void;  // called on socket/connection errors
+  onClose?: () => void;        // called when connection closes
+  autoReconnect?: boolean;     // default: false. Auto-reconnect on connection loss
+  maxReconnectAttempts?: number; // default: 3. Max retries with exponential backoff
 }
 ```
 
@@ -180,9 +187,28 @@ await mail.get({
 
 Without a summariser, the fallback extracts the first paragraph (up to 300 chars).
 
+### Connection Management
+
+Operations are automatically queued. Concurrent calls are safe - they execute sequentially on the single IMAP connection.
+
+```typescript
+const mail = await createClient({
+  ...config,
+  autoReconnect: true,
+  maxReconnectAttempts: 3,
+  onConnectionError: (err) => console.error("Connection lost:", err.message),
+  onClose: () => console.log("Connection closed"),
+});
+
+// Manual reconnect (always available, regardless of autoReconnect)
+await mail.reconnect();
+```
+
+When `autoReconnect` is enabled, the client retries with exponential backoff (1s, 2s, 4s, up to 10s cap). Operations issued during reconnection wait automatically.
+
 ## Error Handling
 
-All errors are `MailError` instances with a `code` property:
+All errors are `MailError` instances with a `code` property and the original error available via `cause`:
 
 | Code | Meaning |
 |------|---------|
@@ -218,7 +244,7 @@ host = "imap.gmail.com"
 port = 993
 secure = true
 timezone = "Pacific/Auckland"
-# ip_family = 4  # uncomment to force IPv4 (helps with flaky IPv6)
+# ip_family = 4  # default. Set to 0 for dual-stack or 6 for IPv6 only
 
 [auth]
 user = "alice@gmail.com"
