@@ -77,8 +77,8 @@ export async function list(
 
 		if (paged.length === 0) {
 			const heading = hasStatus
-			? `# ${input.folder} (${formatNumber(unseen)} unread / ${formatNumber(total)} total)`
-			: `# ${input.folder} (${formatNumber(total)} messages)`;
+				? `# ${input.folder} (${formatNumber(unseen)} unread / ${formatNumber(total)} total)`
+				: `# ${input.folder} (${formatNumber(total)} messages)`;
 			return `${heading}\n\nNo messages found.`;
 		}
 

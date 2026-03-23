@@ -67,6 +67,7 @@ let latestImap: ReturnType<typeof createMockImap>;
 
 function createMockImap() {
 	return {
+		on: mock(() => {}),
 		connect: mock(() => Promise.resolve()),
 		logout: mock(() => Promise.resolve()),
 		list: mock(() =>
