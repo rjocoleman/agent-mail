@@ -1,7 +1,7 @@
 import type { ImapFlow } from "imapflow";
 import { reverseAliases } from "../aliases/index.js";
 import { formatNumber, renderTable } from "../processing/format.js";
-import type { MailConfig, Provider } from "../types.js";
+import { type MailConfig, type Provider, wrapImapError } from "../types.js";
 
 /**
  * List available IMAP folders with message counts.
@@ -13,24 +13,33 @@ export async function folders(
 	provider: Provider,
 	config: MailConfig,
 ): Promise<string> {
-	const tree = await client.list();
-	const reverse = reverseAliases(provider, config.folderAliases);
+	try {
+		const tree = await client.list();
+		const reverse = reverseAliases(provider, config.folderAliases);
 
-	const rows: string[][] = [];
+		const rows: string[][] = [];
 
-	for (const folder of tree) {
-		const status = await client.status(folder.path, {
-			messages: true,
-			unseen: true,
-		});
+		for (const folder of tree) {
+			const status = await client.status(folder.path, {
+				messages: true,
+				unseen: true,
+			});
 
-		const alias = reverse.get(folder.path);
-		const displayName = alias && alias !== folder.path ? `${alias} (${folder.path})` : folder.path;
+			const alias = reverse.get(folder.path);
+			const displayName =
+				alias && alias !== folder.path ? `${alias} (${folder.path})` : folder.path;
 
-		rows.push([displayName, formatNumber(status.messages ?? 0), formatNumber(status.unseen ?? 0)]);
+			rows.push([
+				displayName,
+				formatNumber(status.messages ?? 0),
+				formatNumber(status.unseen ?? 0),
+			]);
+		}
+
+		const table = renderTable(["Folder", "Total", "Unread"], rows, new Set([1, 2]));
+
+		return `# Mail Folders\n\n${table}`;
+	} catch (err) {
+		throw wrapImapError(err, "folders");
 	}
-
-	const table = renderTable(["Folder", "Total", "Unread"], rows, new Set([1, 2]));
-
-	return `# Mail Folders\n\n${table}`;
 }

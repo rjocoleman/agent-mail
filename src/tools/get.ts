@@ -10,8 +10,7 @@ import {
 } from "../processing/format.js";
 import { summarise } from "../processing/summary.js";
 import type { ParsedGetInput } from "../schemas.js";
-import type { MailConfig } from "../types.js";
-import { MailError } from "../types.js";
+import { type MailConfig, MailError, wrapImapError } from "../types.js";
 
 /**
  * Fetch a single message by UID.
@@ -127,6 +126,8 @@ export async function get(
 		}
 
 		return parts.join("\n\n");
+	} catch (err) {
+		throw wrapImapError(err, `get uid:${input.uid} in ${input.folder}`);
 	} finally {
 		lock.release();
 	}

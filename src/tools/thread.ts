@@ -7,8 +7,7 @@ import { formatBytes, formatDateWithTz, formatSender } from "../processing/forma
 import { summarise } from "../processing/summary.js";
 import { collectThreadIds, findMissingIds, sortChronologically } from "../processing/thread.js";
 import type { ParsedThreadInput } from "../schemas.js";
-import type { MailConfig } from "../types.js";
-import { MAX_THREAD_MESSAGES, MailError } from "../types.js";
+import { MAX_THREAD_MESSAGES, type MailConfig, MailError, wrapImapError } from "../types.js";
 
 interface ThreadMessage {
 	uid: number;
@@ -223,6 +222,8 @@ export async function thread(
 		}
 
 		return parts.join("\n\n");
+	} catch (err) {
+		throw wrapImapError(err, `thread uid:${input.uid} in ${input.folder}`);
 	} finally {
 		lock.release();
 	}

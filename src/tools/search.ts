@@ -8,7 +8,8 @@ import {
 	truncate,
 } from "../processing/format.js";
 import type { ParsedSearchInput } from "../schemas.js";
-import type { MailConfig } from "../types.js";
+import { type MailConfig, wrapImapError } from "../types.js";
+import { fetchInBatches } from "./fetch-utils.js";
 
 /** Check if a BODYSTRUCTURE has attachments. */
 function hasAttachments(bodyStructure: MessageStructureObject | undefined): boolean {
@@ -20,10 +21,21 @@ function hasAttachments(bodyStructure: MessageStructureObject | undefined): bool
 	return false;
 }
 
+/** Strip boolean operators and quotes that don't work with IMAP BODY substring search. */
+function sanitiseQuery(raw: string): string {
+	return raw
+		.replace(/^["']+|["']+$/g, "")
+		.replace(/\b(?:AND|OR|NOT)\b/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 /** Build IMAP search criteria from SearchInput. */
-function buildCriteria(input: ParsedSearchInput): Record<string, unknown> {
+function buildCriteria(input: ParsedSearchInput, config: MailConfig): Record<string, unknown> {
 	const criteria: Record<string, unknown> = {};
-	if (input.query) criteria.body = input.query;
+	if (input.query) {
+		criteria.body = config.sanitiseQuery ? sanitiseQuery(input.query) : input.query;
+	}
 	if (input.from) criteria.from = input.from;
 	if (input.to) criteria.to = input.to;
 	if (input.subject) criteria.subject = input.subject;
@@ -61,7 +73,7 @@ async function searchFolder(
 ): Promise<{ rows: string[][]; count: number }> {
 	const lock = await client.getMailboxLock(folder);
 	try {
-		const criteria = buildCriteria(input);
+		const criteria = buildCriteria(input, config);
 		const uids = (await client.search(criteria, { uid: true })) as number[];
 
 		uids.sort((a, b) => b - a);
@@ -81,12 +93,13 @@ async function searchFolder(
 			hasAttachment: boolean;
 		}[] = [];
 
-		for await (const msg of client.fetch(limited.join(","), {
+		const fetched = await fetchInBatches(client, limited, {
 			envelope: true,
 			flags: true,
 			bodyStructure: true,
 			uid: true,
-		})) {
+		});
+		for (const msg of fetched) {
 			messages.push({
 				uid: msg.uid,
 				date: msg.envelope?.date,
@@ -119,6 +132,8 @@ async function searchFolder(
 		});
 
 		return { rows, count: filtered.length };
+	} catch (err) {
+		throw wrapImapError(err, `search ${folder}`);
 	} finally {
 		lock.release();
 	}

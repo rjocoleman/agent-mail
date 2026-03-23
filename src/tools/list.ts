@@ -8,7 +8,8 @@ import {
 	truncate,
 } from "../processing/format.js";
 import type { ParsedListInput } from "../schemas.js";
-import type { MailConfig } from "../types.js";
+import { type MailConfig, wrapImapError } from "../types.js";
+import { fetchInBatches } from "./fetch-utils.js";
 
 /** Check if a BODYSTRUCTURE has attachments (non-inline parts with filenames). */
 function hasAttachments(bodyStructure: MessageStructureObject | undefined): boolean {
@@ -29,16 +30,24 @@ export async function list(
 	input: ParsedListInput,
 	config: MailConfig,
 ): Promise<string> {
-	const lock = await client.getMailboxLock(input.folder);
+	// Fetch folder counts separately - non-fatal if the server rejects it
+	let total = 0;
+	let unseen = 0;
+	let hasStatus = false;
 	try {
 		const status = await client.status(input.folder, {
 			messages: true,
 			unseen: true,
 		});
+		total = status.messages ?? 0;
+		unseen = status.unseen ?? 0;
+		hasStatus = true;
+	} catch {
+		// Some servers reject STATUS for certain folders
+	}
 
-		const total = status.messages ?? 0;
-		const unseen = status.unseen ?? 0;
-
+	const lock = await client.getMailboxLock(input.folder);
+	try {
 		// Build search criteria
 		const searchCriteria: Record<string, unknown> = {};
 		if (input.unread_only) searchCriteria.unseen = true;
@@ -60,10 +69,16 @@ export async function list(
 
 		// Sort descending (most recent first) and apply pagination
 		uids.sort((a, b) => b - a);
+
+		// Use search result count if status() failed
+		if (total === 0) total = uids.length;
+
 		const paged = uids.slice(input.offset, input.offset + input.limit);
 
 		if (paged.length === 0) {
-			const heading = `# ${input.folder} (${formatNumber(unseen)} unread / ${formatNumber(total)} total)`;
+			const heading = hasStatus
+			? `# ${input.folder} (${formatNumber(unseen)} unread / ${formatNumber(total)} total)`
+			: `# ${input.folder} (${formatNumber(total)} messages)`;
 			return `${heading}\n\nNo messages found.`;
 		}
 
@@ -77,13 +92,13 @@ export async function list(
 			hasAttachment: boolean;
 		}[] = [];
 
-		const uidRange = paged.join(",");
-		for await (const msg of client.fetch(uidRange, {
+		const fetched = await fetchInBatches(client, paged, {
 			envelope: true,
 			flags: true,
 			bodyStructure: true,
 			uid: true,
-		})) {
+		});
+		for (const msg of fetched) {
 			messages.push({
 				uid: msg.uid,
 				date: msg.envelope?.date,
@@ -107,7 +122,9 @@ export async function list(
 			return [String(input.offset + i + 1), String(msg.uid), date, from, subject, flags];
 		});
 
-		const heading = `# ${input.folder} (${formatNumber(unseen)} unread / ${formatNumber(total)} total)`;
+		const heading = hasStatus
+			? `# ${input.folder} (${formatNumber(unseen)} unread / ${formatNumber(total)} total)`
+			: `# ${input.folder} (${formatNumber(total)} messages)`;
 		const rangeStart = input.offset + 1;
 		const rangeEnd = input.offset + messages.length;
 		const resultTotal = hasFilters ? uids.length : total;
@@ -116,6 +133,8 @@ export async function list(
 		const legend = "● = unread · 📎 = attachment · ⭐ = flagged";
 
 		return `${heading}\n\n${showing}\n\n${table}\n\n${legend}`;
+	} catch (err) {
+		throw wrapImapError(err, `list ${input.folder}`);
 	} finally {
 		lock.release();
 	}

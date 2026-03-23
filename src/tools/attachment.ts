@@ -1,6 +1,6 @@
 import type { ImapFlow } from "imapflow";
 import type { ParsedAttachmentInput } from "../schemas.js";
-import { type AttachmentResult, MAX_ATTACHMENT_BYTES, MailError } from "../types.js";
+import { type AttachmentResult, MAX_ATTACHMENT_BYTES, MailError, wrapImapError } from "../types.js";
 
 /**
  * Download a specific attachment by UID and MIME part index.
@@ -43,6 +43,8 @@ export async function attachment(
 			size: content.length,
 			content,
 		};
+	} catch (err) {
+		throw wrapImapError(err, `attachment uid:${input.uid} part:${input.part} in ${input.folder}`);
 	} finally {
 		lock.release();
 	}
