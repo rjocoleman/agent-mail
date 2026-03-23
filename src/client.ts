@@ -35,14 +35,23 @@ import { MailError } from "./types.js";
  * persistent connection with keepalive.
  */
 export class AgentMailClient {
-	private readonly imap: ImapFlow;
+	private imap: ImapFlow;
 	private readonly config: MailConfig;
 	private provider: Provider = "generic";
 	private knownPaths = new Set<string>();
+	private queue: Promise<void> = Promise.resolve();
+	private connected = false;
+	private reconnecting: Promise<void> | null = null;
+	private reconnectAttempts = 0;
 
 	constructor(config: MailConfig) {
 		this.config = config;
-		this.imap = new ImapFlow({
+		this.imap = this.createImapInstance();
+	}
+
+	private createImapInstance(): ImapFlow {
+		const config = this.config;
+		const imap = new ImapFlow({
 			host: config.host,
 			port: config.port,
 			secure: config.secure,
@@ -65,6 +74,25 @@ export class AgentMailClient {
 				config.tls.rejectUnauthorized !== false ? { checkServerIdentity: () => undefined } : {},
 			),
 		});
+
+		imap.on("error", (err: Error) => {
+			this.connected = false;
+			if (!this.reconnecting) {
+				config.onConnectionError?.(err);
+			}
+			if (config.autoReconnect) {
+				this.attemptReconnect();
+			}
+		});
+
+		imap.on("close", () => {
+			this.connected = false;
+			if (!this.reconnecting) {
+				config.onClose?.();
+			}
+		});
+
+		return imap;
 	}
 
 	/** Connect to the IMAP server and detect the provider. */
@@ -83,6 +111,8 @@ export class AgentMailClient {
 			throw new MailError("CONNECTION", `Failed to connect: ${message}`, err);
 		}
 
+		this.connected = true;
+
 		// Detect provider from folder listing
 		const tree = await this.imap.list();
 		const paths = tree.map((f) => f.path);
@@ -92,7 +122,44 @@ export class AgentMailClient {
 
 	/** Disconnect from the IMAP server. */
 	async disconnect(): Promise<void> {
+		this.connected = false;
 		await this.imap.logout();
+	}
+
+	/** Reconnect to the IMAP server with a fresh connection. */
+	async reconnect(): Promise<void> {
+		try {
+			await this.imap.logout();
+		} catch {
+			// Already dead, ignore
+		}
+		this.imap = this.createImapInstance();
+		await this.connect();
+	}
+
+	private attemptReconnect(): void {
+		if (this.reconnecting) return;
+		this.reconnecting = this.doReconnect().finally(() => {
+			this.reconnecting = null;
+		});
+	}
+
+	private async doReconnect(): Promise<void> {
+		const max = this.config.maxReconnectAttempts ?? 3;
+		while (this.reconnectAttempts < max) {
+			this.reconnectAttempts++;
+			const delay = Math.min(1000 * 2 ** (this.reconnectAttempts - 1), 10_000);
+			await new Promise((r) => setTimeout(r, delay));
+			try {
+				this.imap = this.createImapInstance();
+				await this.connect();
+				this.reconnectAttempts = 0;
+				return;
+			} catch {
+				// Retry until exhausted
+			}
+		}
+		this.reconnectAttempts = 0;
 	}
 
 	/** Resolve a folder alias to the real IMAP path. */
@@ -116,6 +183,30 @@ export class AgentMailClient {
 		}
 	}
 
+	/** Serialise operations on the single IMAP connection. */
+	private async enqueue<T>(fn: () => Promise<T>): Promise<T> {
+		if (this.reconnecting) await this.reconnecting;
+		if (!this.connected) {
+			throw new MailError("CONNECTION", "Not connected. Call reconnect() or create a new client.");
+		}
+		let resolve!: () => void;
+		const next = new Promise<void>((r) => {
+			resolve = r;
+		});
+		const prev = this.queue;
+		this.queue = next;
+		await prev;
+		if (this.reconnecting) await this.reconnecting;
+		if (!this.connected) {
+			throw new MailError("CONNECTION", "Not connected. Call reconnect() or create a new client.");
+		}
+		try {
+			return await fn();
+		} finally {
+			resolve();
+		}
+	}
+
 	// -- Public API --
 
 	/**
@@ -124,7 +215,7 @@ export class AgentMailClient {
 	 * Alias names are used where detected (e.g. "Sent" instead of "[Gmail]/Sent Mail").
 	 */
 	async folders(): Promise<string> {
-		return folders(this.imap, this.provider, this.config);
+		return this.enqueue(() => folders(this.imap, this.provider, this.config));
 	}
 
 	/**
@@ -137,7 +228,7 @@ export class AgentMailClient {
 		const parsed = listInputSchema.safeParse(input ?? {});
 		if (!parsed.success) throw new MailError("INVALID_INPUT", parsed.error.message);
 		parsed.data.folder = this.resolve(parsed.data.folder);
-		return list(this.imap, parsed.data, this.config);
+		return this.enqueue(() => list(this.imap, parsed.data, this.config));
 	}
 
 	/**
@@ -145,7 +236,7 @@ export class AgentMailClient {
 	 * Zero-parameter shortcut for "what's new".
 	 */
 	async recent(): Promise<string> {
-		return recent(this.imap, this.config);
+		return this.enqueue(() => recent(this.imap, this.config));
 	}
 
 	/**
@@ -160,7 +251,7 @@ export class AgentMailClient {
 		const parsed = getInputSchema.safeParse(input);
 		if (!parsed.success) throw new MailError("INVALID_INPUT", parsed.error.message);
 		parsed.data.folder = this.resolve(parsed.data.folder);
-		return get(this.imap, parsed.data, this.config);
+		return this.enqueue(() => get(this.imap, parsed.data, this.config));
 	}
 
 	/**
@@ -174,7 +265,7 @@ export class AgentMailClient {
 		const parsed = threadInputSchema.safeParse(input);
 		if (!parsed.success) throw new MailError("INVALID_INPUT", parsed.error.message);
 		parsed.data.folder = this.resolve(parsed.data.folder);
-		return thread(this.imap, parsed.data, this.config);
+		return this.enqueue(() => thread(this.imap, parsed.data, this.config));
 	}
 
 	/**
@@ -190,10 +281,12 @@ export class AgentMailClient {
 		if (parsed.data.folder !== "*") {
 			parsed.data.folder = this.resolve(parsed.data.folder);
 		}
-		return this.withTimeout(
-			search(this.imap, parsed.data, this.config),
-			this.config.timeouts.search,
-			"search",
+		return this.enqueue(() =>
+			this.withTimeout(
+				search(this.imap, parsed.data, this.config),
+				this.config.timeouts.search,
+				"search",
+			),
 		);
 	}
 
@@ -208,7 +301,7 @@ export class AgentMailClient {
 		const parsed = attachmentInputSchema.safeParse(input);
 		if (!parsed.success) throw new MailError("INVALID_INPUT", parsed.error.message);
 		parsed.data.folder = this.resolve(parsed.data.folder);
-		return attachment(this.imap, parsed.data);
+		return this.enqueue(() => attachment(this.imap, parsed.data));
 	}
 }
 
