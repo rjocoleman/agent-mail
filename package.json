@@ -1,6 +1,6 @@
 {
 	"name": "@rjocoleman/agent-mail",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Pure TypeScript library for read-only IMAP access. Markdown output optimised for LLM context windows.",
 	"license": "MIT",
 	"type": "module",
