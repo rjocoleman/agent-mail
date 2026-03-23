@@ -62,7 +62,7 @@ export interface MailConfig {
 	timezone: string;
 	/** Operation timeouts. */
 	timeouts: { connect: number; command: number; search: number };
-	/** IP version preference. 4 = IPv4 only, 6 = IPv6 only, 0 = both. Default: 0. */
+	/** IP version preference. 4 = IPv4 only, 6 = IPv6 only, 0 = both. Default: 4. */
 	ip_family: 0 | 4 | 6;
 	/** TLS connection overrides. */
 	tls: TlsConfig;
@@ -70,6 +70,16 @@ export interface MailConfig {
 	summarise?: Summariser;
 	/** Custom folder name mappings. */
 	folderAliases?: Record<string, string>;
+	/** Strip boolean operators and quotes from search queries before passing to IMAP BODY. Default: true. */
+	sanitiseQuery?: boolean;
+	/** Called when the connection drops unexpectedly (socket timeout, server disconnect). */
+	onConnectionError?: (error: Error) => void;
+	/** Called when the connection closes (expected or unexpected). */
+	onClose?: () => void;
+	/** Automatically reconnect on connection loss. Default: false. */
+	autoReconnect?: boolean;
+	/** Max reconnection attempts before giving up. Default: 3. */
+	maxReconnectAttempts?: number;
 }
 
 /** Input for `list()` before defaults are applied. */
@@ -130,7 +140,12 @@ export interface ThreadInput {
 export interface SearchInput {
 	/** Folder name, or "*" for all folders. Default: "INBOX". */
 	folder?: string;
-	/** Free text search (IMAP TEXT). */
+	/**
+	 * Plain substring to match in message bodies (IMAP BODY search).
+	 * Substring-only by default: no boolean operators, no quoted phrases, no wildcards.
+	 * Multi-word strings match as a single contiguous substring.
+	 * Set `sanitiseQuery: false` in MailConfig to pass the raw string through.
+	 */
 	query?: string;
 	/** Filter by sender. */
 	from?: string;
@@ -221,6 +236,19 @@ export class MailError extends Error {
 		this.name = "MailError";
 		this.code = code;
 	}
+}
+
+/**
+ * Wrap an unknown error in a {@linkcode MailError}, preserving the original as `cause`.
+ * If the error is already a `MailError`, it is returned unchanged.
+ *
+ * @param err - The caught error (typically from ImapFlow).
+ * @param context - Human-readable label for the failing operation (e.g. `"list INBOX"`).
+ */
+export function wrapImapError(err: unknown, context: string): MailError {
+	if (err instanceof MailError) return err;
+	const message = err instanceof Error ? err.message : String(err);
+	return new MailError("CONNECTION", `${context}: ${message}`, err);
 }
 
 /** Maximum attachment download size in bytes (25 MB). */

@@ -30,7 +30,7 @@ export const mailConfigSchema = z.object({
 	ip_family: z
 		.union([z.literal(0), z.literal(4), z.literal(6)])
 		.optional()
-		.default(0),
+		.default(4),
 	/** TLS connection overrides. `servername` sets SNI hostname, `rejectUnauthorized` controls cert validation. */
 	tls: z
 		.optional(
@@ -44,6 +44,11 @@ export const mailConfigSchema = z.object({
 		.default({}),
 	summarise: z.optional(z.custom<Summariser>()),
 	folderAliases: z.optional(z.record(z.string(), z.string())),
+	sanitiseQuery: z.boolean().optional().default(true),
+	onConnectionError: z.optional(z.custom<(error: Error) => void>()),
+	onClose: z.optional(z.custom<() => void>()),
+	autoReconnect: z.boolean().optional().default(false),
+	maxReconnectAttempts: z.number().int().min(1).max(10).optional().default(3),
 });
 
 export const listInputSchema = z.object({
@@ -78,7 +83,12 @@ export const threadInputSchema = z.object({
 
 export const searchInputSchema = z.object({
 	folder: z.string().optional().default("INBOX"),
-	query: z.string().optional(),
+	query: z
+		.string()
+		.optional()
+		.describe(
+			"Plain substring match against message body. No boolean operators or wildcards by default.",
+		),
 	from: z.string().optional(),
 	to: z.string().optional(),
 	subject: z.string().optional(),

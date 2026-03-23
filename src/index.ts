@@ -37,4 +37,4 @@ export type {
 	TlsConfig,
 } from "./types.js";
 
-export { MailError } from "./types.js";
+export { MailError, wrapImapError } from "./types.js";
